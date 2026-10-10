@@ -389,7 +389,7 @@ struct HTTPServerTests {
         try await server.shutdown()
     }
 
-    @Test func unsupportedToolSchemaReturnsHTTP400BeforeSSEStarts() async throws {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func unsupportedToolSchemaReturnsHTTP400BeforeSSEStarts() async throws {
         let server = TurboFieldfareHTTPServer(
             modelID: "test-model",
             queueLimit: 1,
@@ -897,7 +897,7 @@ struct HTTPServerTests {
         try await server.shutdown()
     }
 
-    @Test func unknownFieldReturns400WithTheFieldName() async throws {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func unknownFieldReturns400WithTheFieldName() async throws {
         // Pre-fix this returned 200: the decoder dropped `max_token` and the
         // request generated with the server's default maximum, so the caller
         // never learned the option had not applied.
@@ -925,7 +925,7 @@ struct HTTPServerTests {
         try await server.shutdown()
     }
 
-    @Test func unknownFieldOnAStreamingRequestFailsBeforeSSEStarts() async throws {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func unknownFieldOnAStreamingRequestFailsBeforeSSEStarts() async throws {
         let server = TurboFieldfareHTTPServer(
             modelID: "test-model",
             queueLimit: 1,

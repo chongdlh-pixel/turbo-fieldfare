@@ -529,7 +529,7 @@ struct OpenAIValidationTests {
         }
     }
 
-    @Test func unknownTopLevelFieldIsAServerRequestErrorNotMalformedJSON() {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func unknownTopLevelFieldIsAServerRequestErrorNotMalformedJSON() {
         // Regression for issue 168: the synthesized decoder discarded
         // `max_token`, so this body decoded cleanly and the request generated
         // with the default 4096-token maximum under a 200. The error class is
@@ -550,7 +550,7 @@ struct OpenAIValidationTests {
         }
     }
 
-    @Test func unknownFieldsAreNamedSortedAndTheFirstIsTheParam() {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func unknownFieldsAreNamedSortedAndTheFirstIsTheParam() {
         let data = Data(#"""
         {"model":"m","messages":[{"role":"user","content":"x"}],"zeta":1,"alpha":2}
         """#.utf8)
@@ -653,7 +653,7 @@ struct OpenAIValidationTests {
         }
     }
 
-    @Test(arguments: [
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)"), arguments: [
         "logit_bias", "top_logprobs", "reasoning_effort", "verbosity", "modalities",
         "audio", "prediction", "web_search_options",
     ])
@@ -676,7 +676,7 @@ struct OpenAIValidationTests {
         }
     }
 
-    @Test func unknownKeyNamesAreBoundedAndQuoted() {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func unknownKeyNamesAreBoundedAndQuoted() {
         // The body cap is 5 MiB, so a caller must not be able to have an
         // arbitrary slice of its own keys quoted back, and a key carrying a
         // quote must not be able to render as two keys.
@@ -721,7 +721,7 @@ struct OpenAIValidationTests {
         }
     }
 
-    @Test(arguments: [
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)"), arguments: [
         ("functions", #""functions":[{"name":"f","parameters":{"type":"object"}}]"#),
         ("function_call", #""function_call":{"name":"f"}"#),
     ])

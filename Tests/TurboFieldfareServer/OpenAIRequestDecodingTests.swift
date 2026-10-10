@@ -92,7 +92,7 @@ struct OpenAIRequestDecodingTests {
     // The key sweep runs before the typed decode, so the answer names the key
     // the caller misspelled rather than whatever DecodingError another field
     // raises first.
-    @Test func unknownKeyIsNamedEvenBesideAMistypedDeclaredField() throws {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func unknownKeyIsNamedEvenBesideAMistypedDeclaredField() throws {
         let refusal = try #require(
             decodeRejection(request(#""max_token":4,"temperature":"hot""#)))
         #expect(refusal.message.contains("max_token"))
@@ -100,7 +100,7 @@ struct OpenAIRequestDecodingTests {
         #expect(refusal.code == "unknown_parameter")
     }
 
-    @Test func unsupportedKeyIsNamedEvenBesideAMistypedDeclaredField() throws {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func unsupportedKeyIsNamedEvenBesideAMistypedDeclaredField() throws {
         let refusal = try #require(
             decodeRejection(request(#""logit_bias":{"1":2},"temperature":"hot""#)))
         #expect(refusal.message == "logit_bias is not supported")
@@ -123,7 +123,21 @@ struct OpenAIRequestDecodingTests {
         #expect(validated.messages.count == 1)
     }
 
-    @Test func anUnsupportedKeyCarryingAValueIsStillRefused() throws {
+    @Test func unknownAndUnsupportedTopLevelFieldsAreIgnored() throws {
+        for field in [#""reasoning_effort":"none""#, #""chat_template_kwargs":{"enable_thinking":false}"#,
+                      #""logit_bias":{}"#, #""functions":[{"name":"f"}]"#, #""foo":1"#] {
+            let validated = try OpenAIRequestValidator.validate(
+                try decode(request(field)), modelID: "m")
+            #expect(validated.messages.count == 1)
+        }
+    }
+
+    @Test func ollamaStyleNameTagModelIdIsAccepted() throws {
+        let body = #"{"model":"m:latest","messages":[{"role":"user","content":"x"}]}"#
+        _ = try OpenAIRequestValidator.validate(try decode(body), modelID: "m")
+    }
+
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func anUnsupportedKeyCarryingAValueIsStillRefused() throws {
         let refusal = try #require(decodeRejection(request(#""logit_bias":{}"#)))
         #expect(refusal.param == "logit_bias")
         #expect(refusal.code == "unsupported_value")
@@ -133,7 +147,7 @@ struct OpenAIRequestDecodingTests {
     // marks is a single Character however many bytes it carries, so the whole
     // key came back in `param` and, quoted, in `message`. Bounded in bytes,
     // the echo stays within the 64-byte limit plus the ellipsis.
-    @Test func aKeyMadeOfCombiningMarksIsBoundedInBytes() throws {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func aKeyMadeOfCombiningMarksIsBoundedInBytes() throws {
         let key = "a" + String(repeating: "\u{0301}", count: 100_000)
         let refusal = try #require(decodeRejection(request(#""\#(key)":1"#)))
         #expect(refusal.code == "unknown_parameter")
@@ -144,7 +158,7 @@ struct OpenAIRequestDecodingTests {
                 "message is \(refusal.message.utf8.count) bytes")
     }
 
-    @Test func legacyFunctionsAreNamedEvenBesideAMistypedDeclaredField() throws {
+    @Test(.disabled("LOCAL PATCH: unknown/unsupported fields and strict tool unions are tolerated, not refused (Hermes compat)")) func legacyFunctionsAreNamedEvenBesideAMistypedDeclaredField() throws {
         let refusal = try #require(
             decodeRejection(request(#""functions":[{"name":"f"}],"temperature":"hot""#)))
         #expect(refusal.message == "legacy functions are not supported; use tools")
