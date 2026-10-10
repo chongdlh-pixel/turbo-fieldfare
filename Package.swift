@@ -17,13 +17,25 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
-        .package(url: "https://github.com/apple/swift-nio.git", exact: "2.99.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", exact: "2.101.3"),
+        // Pinned by revision: tag 1.7.3 predates the `\left...\right`
+        // duplication fix and typesets 433 of the 607-string coverage sweep
+        // against this revision's 479.
+        .package(
+            url: "https://github.com/mgriebling/SwiftMath.git",
+            revision: "1d2c90827e9c3908269d810d055fb03b7da5fd53"),
     ],
     targets: [
         .target(
+            name: "TurboFieldfareFormat",
+            path: "Sources/TurboFieldfareFormat"
+        ),
+        .target(
             name: "TurboFieldfare",
             dependencies: [
+                "TurboFieldfareFormat",
                 .product(name: "Tokenizers", package: "swift-transformers"),
+                .product(name: "Hub", package: "swift-transformers"),
             ],
             path: "Sources/TurboFieldfare",
             resources: [
@@ -32,6 +44,7 @@ let package = Package(
         ),
         .target(
             name: "TurboFieldfareRepackCore",
+            dependencies: ["TurboFieldfareFormat"],
             path: "Sources/TurboFieldfareRepack/Core"
         ),
         .executableTarget(
@@ -60,7 +73,11 @@ let package = Package(
         ),
         .target(
             name: "TurboFieldfareMacPresentation",
-            dependencies: ["TurboFieldfareAppCore"],
+            dependencies: [
+                "TurboFieldfare",
+                "TurboFieldfareAppCore",
+                .product(name: "SwiftMath", package: "SwiftMath"),
+            ],
             path: "Sources/TurboFieldfareApp/MacPresentation"
         ),
         .target(
@@ -101,24 +118,54 @@ let package = Package(
             path: "Sources/TurboFieldfareValidation/Support"
         ),
         .testTarget(
+            name: "TurboFieldfareFormatTests",
+            dependencies: ["TurboFieldfareFormat"],
+            path: "Tests/TurboFieldfareFormat"
+        ),
+        .testTarget(
+            name: "TurboFieldfareFormatCompatibilityTests",
+            dependencies: ["TurboFieldfareFormat", "TurboFieldfare", "TurboFieldfareRepackCore"],
+            path: "Tests/TurboFieldfareFormatCompatibility",
+            resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
             name: "TurboFieldfareTestsCore",
-            dependencies: ["TurboFieldfare", "TurboFieldfareValidationSupport", "TurboFieldfareRepackCore", "TurboFieldfareCLICore"],
-            path: "Tests/TurboFieldfare/Core"
+            dependencies: [
+                "TurboFieldfare",
+                "TurboFieldfareValidationSupport",
+                "TurboFieldfareRepackCore",
+                "TurboFieldfareCLICore",
+                .product(name: "Hub", package: "swift-transformers"),
+            ],
+            path: "Tests/TurboFieldfare/Core",
+            resources: [.copy("Runtime/Vision/Fixtures/images")]
         ),
         .testTarget(
             name: "TurboFieldfareRepackTests",
-            dependencies: ["TurboFieldfareRepackCore"],
+            dependencies: ["TurboFieldfareFormat", "TurboFieldfareRepackCore"],
             path: "Tests/TurboFieldfareRepack/Core"
         ),
         .testTarget(
             name: "TurboFieldfareAppCoreTests",
-            dependencies: ["TurboFieldfareAppCore", "TurboFieldfare", "TurboFieldfareRepackCore", "TurboFieldfareDecodeProtocol"],
+            dependencies: [
+                "TurboFieldfareAppCore", "TurboFieldfare", "TurboFieldfareRepackCore",
+                "TurboFieldfareDecodeProtocol",
+                // `SplitMix64`, for the seeded conversation-history walk. The
+                // only seeded generator in the tree; a second copy would drift.
+                "TurboFieldfareValidationSupport",
+            ],
             path: "Tests/TurboFieldfareApp/Core"
         ),
         .testTarget(
+            name: "TurboFieldfareDecodeServiceTests",
+            dependencies: ["TurboFieldfare", "TurboFieldfareDecodeService", "TurboFieldfareAppCore", "TurboFieldfareDecodeProtocol"],
+            path: "Tests/TurboFieldfareDecodeService"
+        ),
+        .testTarget(
             name: "TurboFieldfareMacPresentationTests",
-            dependencies: ["TurboFieldfareMacPresentation"],
-            path: "Tests/TurboFieldfareApp/MacPresentation"
+            dependencies: ["TurboFieldfareAppCore", "TurboFieldfareMacPresentation"],
+            path: "Tests/TurboFieldfareApp/MacPresentation",
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "TurboFieldfareServerTests",

@@ -1,9 +1,10 @@
 import Foundation
+import TurboFieldfareFormat
 
 /// On-disk page alignment unit for `.gturbo` files. Fixed at 16 KB regardless
 /// of host page size — the format is the contract, not the kernel.
 enum Layout {
-    static let pageBytes: UInt64 = 16_384
+    static let pageBytes = GTurboFormatV1.alignmentBytes
 }
 
 // MARK: - Plan data types
@@ -94,7 +95,100 @@ struct RepackPlan: Sendable {
 
 // MARK: - Planner
 
+struct VisionPackPlan: Sendable {
+    struct Entry: Sendable {
+        let source: SourceTensor
+        let executionPosition: Int
+        let fileOffset: UInt64
+        let quantSpec: QuantSpec?
+        /// Affine group size, pinned to 64 by `planVisionCompanion`.
+        let groupSize: Int
+    }
+
+    let entries: [Entry]
+    let weightsFileSize: UInt64
+    let sourcePayloadBytes: UInt64
+}
+
 enum RepackPlanner {
+
+    static func planVisionCompanion(
+        meta: IndexLoader.SourceMetadata,
+        shardHeaders: [Safetensors.Header]
+    ) throws -> VisionPackPlan {
+        guard meta.baseBits == 4, meta.baseGroupSize == 64,
+              meta.baseMode.lowercased() == "affine" else {
+            throw RepackError.configurationInvalid(
+                detail: "vision companion requires MLX affine 4-bit group-64 source metadata")
+        }
+
+        let tensors = shardHeaders.flatMap(\.tensors).filter {
+            isMultimodalTensorName($0.name)
+        }
+        guard tensors.count == 358 else {
+            throw RepackError.configurationInvalid(
+                detail: "expected 358 vision tensors, found \(tensors.count)")
+        }
+        let sourceBytes = tensors.reduce(UInt64(0)) { $0 + $1.sizeBytes }
+        guard sourceBytes == 1_140_925_536 else {
+            throw RepackError.configurationInvalid(
+                detail: "expected 1140925536 vision bytes, found \(sourceBytes)")
+        }
+
+        let ordered = tensors.sorted { visionExecutionKey($0.name) < visionExecutionKey($1.name) }
+        var offset: UInt64 = 0
+        var entries: [VisionPackPlan.Entry] = []
+        entries.reserveCapacity(ordered.count)
+        for (position, tensor) in ordered.enumerated() {
+            offset = visionAlignUp(offset, to: GTurboVisionFormatV1.alignmentBytes)
+            let quantSpec: QuantSpec?
+            if tensor.dtype == .u32 {
+                let spec = IndexLoader.quantSpec(forTensor: tensor.name, meta: meta)
+                // Group size is not carried per tensor in this tree; the base
+                // group was already pinned to 64 above.
+                guard spec.bits == 4 else {
+                    throw RepackError.configurationInvalid(
+                        detail: "unsupported vision quantization for \(tensor.name)")
+                }
+                quantSpec = spec
+            } else {
+                guard tensor.dtype == .bf16 else {
+                    throw RepackError.configurationInvalid(
+                        detail: "unsupported vision dtype for \(tensor.name)")
+                }
+                quantSpec = nil
+            }
+            entries.append(.init(source: tensor,
+                                 executionPosition: position,
+                                 fileOffset: offset,
+                                 quantSpec: quantSpec,
+                                 groupSize: meta.baseGroupSize))
+            offset += tensor.sizeBytes
+        }
+        return VisionPackPlan(entries: entries,
+                              weightsFileSize: offset,
+                              sourcePayloadBytes: sourceBytes)
+    }
+
+    private static func visionExecutionKey(_ name: String) -> String {
+        if name.hasPrefix("vision_tower.patch_embedder.") {
+            return "0000/\(name)"
+        }
+        if let layer = layerIndex(in: name), name.hasPrefix("vision_tower.encoder.layers.") {
+            return String(format: "1000/%03d/%@", layer, name)
+        }
+        if name == "vision_tower.std_bias" || name == "vision_tower.std_scale" {
+            return "2000/\(name)"
+        }
+        if name.hasPrefix("embed_vision.") {
+            return "3000/\(name)"
+        }
+        return "9999/\(name)"
+    }
+
+    private static func visionAlignUp(_ value: UInt64, to alignment: UInt64) -> UInt64 {
+        ((value + alignment - 1) / alignment) * alignment
+    }
 
     /// Classify a tensor name. Routed-expert tensors split off the LM bucket.
     enum Bucket: Equatable {
@@ -291,7 +385,7 @@ enum RepackPlanner {
                 fileCursor = bOff + bSize
 
                 entries.append(ResidentEntry(
-                    name: name, dtype: 0,
+                    name: name, dtype: GTurboFormatV1.DType.u32.rawValue,
                     logicalShape4: padTo4(logical),
                     fileOffset: wOff, sizeBytes: wSize,
                     scaleOffset: sOff, scaleSize: sSize,
@@ -371,21 +465,21 @@ enum RepackPlanner {
             let biasesLogical = Array(b.shape.dropFirst())
 
             let wSlice = PerExpertTensorSlice(
-                role: role, component: "weights", dtype: 0,
+                role: role, component: "weights", dtype: GTurboFormatV1.DType.u32.rawValue,
                 logicalShape: logicalPerExpert,
                 offsetInExpertBlob: blobCursor, sizeInExpertBlob: perExpertWeightSize,
                 sourceOffsetPerExpert: perExpertWeightSize, sourceTensor: w,
                 bitsForWeights: spec.bits)
             blobCursor += perExpertWeightSize
             let sSlice = PerExpertTensorSlice(
-                role: role, component: "scales", dtype: 1,
+                role: role, component: "scales", dtype: GTurboFormatV1.DType.bf16.rawValue,
                 logicalShape: scalesLogical,
                 offsetInExpertBlob: blobCursor, sizeInExpertBlob: perExpertScaleSize,
                 sourceOffsetPerExpert: perExpertScaleSize, sourceTensor: s,
                 bitsForWeights: nil)
             blobCursor += perExpertScaleSize
             let bSlice = PerExpertTensorSlice(
-                role: role, component: "biases", dtype: 1,
+                role: role, component: "biases", dtype: GTurboFormatV1.DType.bf16.rawValue,
                 logicalShape: biasesLogical,
                 offsetInExpertBlob: blobCursor, sizeInExpertBlob: perExpertBiasSize,
                 sourceOffsetPerExpert: perExpertBiasSize, sourceTensor: b,

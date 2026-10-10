@@ -60,6 +60,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
 
     public let layout: StreamLayout
     public let slotCount: Int
+    private let slotAllocationSize: Int
     public let cachePolicy: ExpertCachePolicy
 
     private let fd: Int32
@@ -75,34 +76,59 @@ public final class PreadExpertStreamer: @unchecked Sendable {
     private var useClock = 0
     private let cacheLock = NSLock()
 
-    public init(layout: StreamLayout,
-                device: MTLDevice,
-                slotCount: Int,
-                cachePolicy: ExpertCachePolicy = .lfu) throws {
+    public convenience init(layout: StreamLayout,
+                            device: MTLDevice,
+                            slotCount: Int,
+                            cachePolicy: ExpertCachePolicy = .lfu) throws {
+        try self.init(layout: layout,
+                      device: device,
+                      slotCount: slotCount,
+                      cachePolicy: cachePolicy,
+                      fileDescriptor: nil)
+    }
+
+    package init(layout: StreamLayout,
+                 device: MTLDevice,
+                 slotCount: Int,
+                 cachePolicy: ExpertCachePolicy = .lfu,
+                 fileDescriptor: Int32?) throws {
         precondition(slotCount > 0, "slotCount must be positive")
         self.layout = layout
         self.slotCount = slotCount
         self.cachePolicy = cachePolicy
         let pageSize = Int(getpagesize())
 
-        let openedFD = open(layout.path, O_RDONLY)
+        let openedFD = fileDescriptor.map { fcntl($0, F_DUPFD_CLOEXEC, 0) }
+            ?? open(layout.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
         guard openedFD >= 0 else {
             throw StreamerError.openFailed(path: layout.path, errno: errno)
         }
         self.fd = openedFD
+        var closeFDOnFailure = true
+        defer { if closeFDOnFailure { close(openedFD) } }
 
         var fileStats = stat()
-        if fstat(openedFD, &fileStats) == 0 {
-            let required = layout.streamOffset + layout.streamSize
-            if UInt64(fileStats.st_size) < required {
-                close(openedFD)
-                throw StreamerError.sizeMismatch(
-                    expected: required,
-                    actual: UInt64(fileStats.st_size))
-            }
+        guard fstat(openedFD, &fileStats) == 0,
+              (fileStats.st_mode & S_IFMT) == S_IFREG,
+              fileStats.st_size >= 0 else {
+            throw StreamerError.openFailed(
+                path: layout.path, errno: errno == 0 ? EINVAL : errno)
+        }
+        let (required, requiredOverflow) = layout.streamOffset
+            .addingReportingOverflow(layout.streamSize)
+        guard !requiredOverflow, UInt64(fileStats.st_size) >= required else {
+            throw StreamerError.sizeMismatch(
+                expected: requiredOverflow ? UInt64.max : required,
+                actual: UInt64(fileStats.st_size))
+        }
+        guard layout.expertStride > 0,
+              layout.expertStride <= UInt64(Int.max - (pageSize - 1)) else {
+            throw StreamerError.invalidIOSplitConfiguration(
+                "expertStride \(layout.expertStride) is not addressable")
         }
 
         let allocationSize = ((Int(layout.expertStride) + pageSize - 1) / pageSize) * pageSize
+        self.slotAllocationSize = allocationSize
         var pointers: [UnsafeMutableRawPointer] = []
         var buffers: [MTLBuffer] = []
         pointers.reserveCapacity(slotCount)
@@ -112,7 +138,6 @@ public final class PreadExpertStreamer: @unchecked Sendable {
             for index in buffers.count..<pointers.count {
                 free(pointers[index])
             }
-            close(openedFD)
         }
 
         for _ in 0..<slotCount {
@@ -141,6 +166,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         self.slotExpert = [Int](repeating: -1, count: slotCount)
         self.slotLastUse = [Int](repeating: 0, count: slotCount)
         self.expertUseCount = [Int](repeating: 0, count: max(1, layout.expertsPerLayer))
+        closeFDOnFailure = false
     }
 
     deinit {
@@ -386,5 +412,12 @@ public final class PreadExpertStreamer: @unchecked Sendable {
             }
             filled += readCount
         }
+    }
+
+    /// Model-derived CPU-side scratch owned by this streamer: its aligned
+    /// slot allocation. Diagnostic metadata for residency reporting, not an
+    /// ownership or lifetime API.
+    public var diagnosticSlotScratchBytes: UInt64 {
+        UInt64(slotCount) * UInt64(slotAllocationSize)
     }
 }

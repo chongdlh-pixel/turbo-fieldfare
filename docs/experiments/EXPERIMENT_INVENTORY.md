@@ -50,7 +50,7 @@ resident set size; and **NLL** is negative log-likelihood. See
 | Decode MoE, INT4, and router | [Persistent MoE, vectorization, router, and rejected geometries](summaries/02-decode-moe-int4-and-router.md) | 18 |
 | Expert cache and layout | [Replacement policy, capacity, prediction, and disk layout](summaries/03-expert-cache-prediction-and-layout.md) | 9 |
 | RDADVISE | [The complete short-win to long-context-rejection arc](summaries/04-rdadvise.md) | 7 |
-| Attention and KV cache | [Split attention, MLX geometry, K4/V4, and FP16 ring](summaries/05-attention-and-kv-cache.md) | 14 |
+| Attention and KV cache | [Split attention, MLX geometry, K4/V4, and FP16 ring](summaries/05-attention-and-kv-cache.md) | 15 |
 | Prefill | [Chunking, MPP, routed MoE, overlap, attention, and allocation experiments](summaries/06-prefill.md) | 17 |
 | Fusions and orchestration | [Targeted fusions, head variants, queues, and synchronization](summaries/07-fusions-head-and-orchestration.md) | 15 |
 | Sampling and output | [Gumbel sampling, tokenizer caching, and detokenization](summaries/08-sampling-tokenization-and-output.md) | 4 |
@@ -141,6 +141,7 @@ resident set size; and **NLL** is negative log-likelihood. See
 | [KV-12](summaries/05-attention-and-kv-cache.md#kv-12) — FP16 KV ring | About 575-591 MiB saved; speed neutral/mixed; parity retained. | Production. |
 | [KV-13](summaries/05-attention-and-kv-cache.md#kv-13) — Ring kernel follow-up | Terminal 10.9% isolated median implied only about 0.34% whole-step opportunity. | Rejected; below action gate. |
 | [KV-14](summaries/05-attention-and-kv-cache.md#kv-14) — Prefill attention race | Third barrier fixed one bank but cost 5.1-14.2%; two banks recovered 2.23-6.43%. | Correctness repair. |
+| [KV-15](summaries/05-attention-and-kv-cache.md#kv-15) — Grouped full attention | 8.14 to 18.02 tok/s after a 110K-token prompt; all 256 output token IDs matched. One M5 Pro comparison with 32 cache slots. | Default for Gemma 4 full attention. See the [measurement limits](summaries/10-long-context.md#measurement-limits). |
 
 ### Prefill
 
@@ -162,7 +163,7 @@ resident set size; and **NLL** is negative log-likelihood. See
 | [PF-14](summaries/06-prefill.md#pf-14) — QMM TG reuse | Families +3.2-9.7%; current opportunity about 0.41%. | Rejected. |
 | [PF-15](summaries/06-prefill.md#pf-15) — Batched routed MoE | Isolated +30.91%; balanced end to end about +2%. | Reversed rejection; production. |
 | [PF-16](summaries/06-prefill.md#pf-16) — Long endpoint gate | Delta-NLL +0.002588; top-1 16/16; RSS 888.3 MiB. | Production; validation result. |
-| [PF-17](summaries/06-prefill.md#pf-17) — Apple10 TensorOps full attention | Isolated 11.24x at 16K and 11.63x at 64K; 32K end to end 2.404x. | Production on Apple10; tiled fallback elsewhere. |
+| [PF-17](summaries/06-prefill.md#pf-17) — TensorOps full attention | Apple10: isolated 11.24x at 16K and 11.63x at 64K; 32K end to end 2.404x. Apple8 M2: isolated 9.027-9.294x; 6,784-token prefill 1.726x. | Production when the pipeline builds; Apple8 M2 verified; tiled fallback when unavailable or incompatible. |
 
 ### Fusions, head, and orchestration
 

@@ -1,4 +1,5 @@
 import TurboFieldfareAppCore
+import TurboFieldfareMacPresentation
 import SwiftUI
 
 struct RunnerDiagnosticsSection: View {
@@ -15,11 +16,24 @@ struct RunnerDiagnosticsSection: View {
 
                 groupLabel("Performance")
                 DiagnosticRow("Prompt prefill", MetricFormat.seconds(diagnostics.prefillSeconds))
+                if let prefillRate = diagnostics.prefillTokensPerSecond {
+                    DiagnosticRow(
+                        "Prefill rate",
+                        "\(MetricFormat.rate(prefillRate)) tok/s",
+                        help: "Prompt tokens divided by prefill time. Compare runs with similar prompt lengths and settings; short prompts include proportionally more fixed overhead.")
+                }
                 DiagnosticRow("First token wait", MetricFormat.seconds(diagnostics.timeToFirstTokenSeconds))
                 DiagnosticRow("Request TTFT", MetricFormat.seconds(diagnostics.requestStartTimeToFirstTokenSeconds))
                 DiagnosticRow("Decode duration", MetricFormat.seconds(diagnostics.decodeSeconds))
                 DiagnosticRow("Decode rate", "\(MetricFormat.rate(diagnostics.tokensPerSecond)) tok/s")
-                DiagnosticRow("Peak memory", MetricFormat.memory(diagnostics.peakMemoryBytes))
+                DiagnosticRow("Peak charged",
+                              MetricFormat.memory(diagnostics.peakMemoryBytes),
+                              help: MemoryFootprintExplanation.exclusionNote)
+                if let mapped = diagnostics.visionTowerMappedBytes, mapped > 0 {
+                    // Page cache, not process memory: holding all of it moves
+                    // the figures above by about 5 MB.
+                    DiagnosticRow("Image tower mapped", MetricFormat.memory(mapped))
+                }
                 DiagnosticRow("I/O / token",
                               MetricFormat.milliseconds(diagnostics.runner?.ioMillisecondsPerToken))
 
@@ -123,15 +137,20 @@ private struct DiagnosticRow: View {
     let label: String
     let value: String
     let multiline: Bool
+    let help: String?
 
-    init(_ label: String, _ value: String, multiline: Bool = false) {
+    init(_ label: String,
+         _ value: String,
+         multiline: Bool = false,
+         help: String? = nil) {
         self.label = label
         self.value = value
         self.multiline = multiline
+        self.help = help
     }
 
     var body: some View {
-        LabeledContent(label) {
+        LabeledContent {
             Text(value)
                 .font(.caption)
                 .monospacedDigit()
@@ -140,6 +159,13 @@ private struct DiagnosticRow: View {
                 .multilineTextAlignment(.trailing)
                 .lineLimit(multiline ? nil : 2)
                 .fixedSize(horizontal: false, vertical: true)
+        } label: {
+            HStack(spacing: 4) {
+                Text(label)
+                if let help {
+                    InfoPopoverButton(subject: label, text: help)
+                }
+            }
         }
     }
 }

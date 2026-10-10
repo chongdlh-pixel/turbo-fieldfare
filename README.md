@@ -67,11 +67,12 @@ your prompt, and press **Generate**.
 | Model           | Gemma 4 26B-A4B IT, 26B total parameters, about 3.88B active per token                                                   |
 | Weights         | MLX affine 4-bit, group 64; 8-bit router; 4-bit shared and routed experts                                                |
 | Memory          | ~2 GB of weights and 4K KV cache                                                                                         |
-| Storage         | About 14.3 GB for the installed text-only model                                                                          |
+| Storage         | About 14.3 GB for the text model, plus about 1.1 GB for the optional image pack                                          |
 | Hardware        | Apple Silicon Mac; 8 GB of RAM                                                                                            |
 | Platform        | macOS 26, Metal 4, Swift 6.2                                                                                             |
 | M2 measured decode | [5.1-6.3 tok/s](docs/BENCHMARKS.md#m2-measured-decode) on an 8 GB M2 MacBook Air |
 | M5 measured decode | [31-35 tok/s](docs/BENCHMARKS.md#m5-measured-decode) on a 24 GB M5 Pro |
+| Community Reports | [Here](docs/COMMUNITY_BENCHMARKS.md#community-results) |
 
 The measured result is a reference point, not a performance ceiling. Prompt
 length, generated length, page-cache state, and hardware all affect throughput.
@@ -116,11 +117,21 @@ Generation defaults to temperature `0.2`, Top-K `64`, and Top-P `0.95`. Set
 temperature to `0` for deterministic greedy output. The model can still repeat
 itself or give incorrect answers, so check important results.
 
-TurboFieldfare is text-only. The app and CLI support user and model messages
-plus optional system guidance; they do not expose or execute tools. The
-loopback server accepts function-tool declarations and returns
-model-produced tool calls for the client to authorize and execute. Images,
-audio, and video are not supported.
+The app and CLI support user and model messages plus optional system guidance;
+they do not expose or execute tools. The loopback server accepts function-tool
+declarations and returns model-produced tool calls for the client to authorize
+and execute. Audio and video are not supported.
+
+### Images
+
+Images are supported through a vision tower, which installs as a companion
+pack beside the text model. Install it once and the app, CLI, and server all
+accept images. Without it they tell you image support is unavailable, and the
+text runtime is untouched. The image tower requires an M2 or newer Apple
+Silicon Mac; text-only inference remains available on M1.
+
+[System design](docs/SYSTEM_DESIGN.md#images) covers how the tower runs and
+what it costs on an 8 GB machine.
 
 ### Mac app
 
@@ -157,13 +168,25 @@ After installation:
 
 1. Choose **Load Model**.
 2. Enter a prompt in the composer.
-3. Choose **Generate**, or press <kbd>Command</kbd>+<kbd>Return</kbd>.
-4. Use the stop button or <kbd>Escape</kbd> to end generation early.
+3. Choose **Generate**, or press <kbd>Command</kbd>+<kbd>Return</kbd>. Use **Settings > Send Message With** to choose Return or Command-Return.
+4. Send another message to continue the conversation, or choose **New Chat** to start over.
+5. Use the stop button or <kbd>Escape</kbd> to end generation early.
 
 The status bar shows generation progress, decode speed, and memory use. Use the
 right pane to configure sampling, context length, expert-cache slots, and
 runtime options. See [Runtime controls](docs/RUNTIME_CONTROLS.md) for details
 and defaults.
+
+Use **Settings → Text Size** to enlarge conversation and message-editor text
+from 100% to 200%. Changes apply immediately and are remembered across launches.
+
+#### Conversation history
+
+The app saves chats locally so you can browse and continue them from the
+sidebar. Every launch opens an empty chat. Only one conversation's model context
+(KV cache) stays in memory.
+Browsing other chats keeps that cache intact; continuing another chat replaces
+it. **New Chat** starts fresh.
 
 ### Command-line interface
 
@@ -205,6 +228,40 @@ swift run -c release TurboFieldfareRepack \
   --input-gturbo scratch/gemma4.gturbo
 ```
 
+#### Install image support
+
+The companion pack installs beside the text model:
+
+```bash
+swift run -c release TurboFieldfareRepack \
+  --vision-output scratch/gemma4.vision.gturbo \
+  --text-model scratch/gemma4.gturbo
+```
+
+The pack adds about 1.1 GB. Verify it with `--verify-vision-install`, remove an
+installed one with `--remove-vision-install`, and drop a cancelled download with
+`--discard-partial --vision-output <dir>`. A cancelled transfer can also be
+continued with `--resume`. The Mac app installs the same pack from its
+**Image Support** section.
+
+#### Send an image
+
+```bash
+swift run -c release TurboFieldfareCLI \
+  --model scratch/gemma4.gturbo \
+  --chat-prompt "What is in this picture?" \
+  --image photo.jpg
+```
+
+`--image` is repeatable and requires `--chat-prompt`; it cannot be combined
+with `--prompt` or `--messages-file`. Without the companion pack the run stops
+and says image support is unavailable.
+
+A multi-turn conversation carries its images inside the messages file instead,
+as `image_file` parts in any user message; `--image` covers the single-turn
+case only. Either route needs at least 16 expert-cache slots, because an image
+prompt always prefills chunked.
+
 #### Instruction chat
 
 Put chat messages in a JSON array and pass it with `--messages-file`:
@@ -225,26 +282,12 @@ This formats messages in the same way as the Mac app. The CLI response limit
 is set with `--max-new`, which defaults to 1,024 tokens. The Mac app can
 generate until the selected context window is full.
 
-#### Raw completion
-
-`--prompt` is available for raw completion and reproducible comparisons. It
-passes the text directly to the model without chat formatting. Use
-`--messages-file` for instruction-response conversations.
-
-```bash
-swift run -c release TurboFieldfareCLI \
-  --model scratch/gemma4.gturbo \
-  --prompt "The capital of France is" \
-  --max-new 64 \
-  --temperature 0
-```
-
-This example deliberately requests a short greedy completion.
-
 Common generation options include `--max-context`, `--temperature`, `--top-k`,
 `--top-p`, `--repetition-penalty`, `--seed`, and repeatable `--stop` strings.
-The public CLI uses production runtime defaults. Run the following command for
-the complete option list:
+Runtime options include `--expert-cache-slots`, `--expert-cache-policy`,
+`--prefill`, `--prefill-chunk-tokens`, and `--rdadvise`; omitted options use
+the [production defaults](docs/RUNTIME_CONTROLS.md). Run the following command
+for the complete option list:
 
 ```bash
 swift run -c release TurboFieldfareCLI --help
@@ -300,6 +343,9 @@ multiple rows. Generation repeats the routed layer loop one token at a time.
 The installer applies the same bounded-memory rule: it repacks remote ranges
 directly into `.gturbo` without staging a full shard or tensor.
 
+For a video overview of TurboFieldfare, see Better Stack's
+[Local AI On Apple Silicon uses 7X Less RAM](https://youtu.be/vHhephsP6vU).
+
 For a visual introduction to the model architecture, see Maarten Grootendorst's
 [A Visual Guide to Gemma 4](https://newsletter.maartengrootendorst.com/p/a-visual-guide-to-gemma-4).
 
@@ -312,22 +358,28 @@ correctness invariants.
 TurboFieldfare currently includes:
 
 - Remote streaming repack into the `.gturbo` model format
-- Instruction-tuned Gemma 4 26B-A4B with verified text-only chat formatting
+- Instruction-tuned Gemma 4 26B-A4B with verified chat formatting
 - 4-bit MLX affine embedding, attention, shared-expert, and routed-expert
   weights, with an 8-bit router
 - Custom Metal kernels for quantized GEMV, attention, MoE, normalization,
   RoPE, sampling, and production fusions
 - SSD-backed routed-expert streaming with a bounded expert cache
-- Chunked single-prompt prefill and token-by-token generation
+- Chunked prefill for one-shot prompts and new conversational turns, followed
+  by token-by-token generation
 - FP16 KV storage with bounded circular storage for 25 sliding-window layers
   and linear storage for 5 full-attention layers
 - Exact split-K/V decode attention with distinct normalized K and V paths
 - A Swift library, streaming installer, command-line interface, loopback
-  OpenAI-compatible server, and native SwiftUI/AppKit Mac app with a one-shot
+  OpenAI-compatible server, and native SwiftUI/AppKit Mac app with a sibling
   local decode service
+- Optional image input from a separately installed companion pack: the vision
+  tower runs on bounded scratch, image rows attend in both directions inside
+  the sliding-window layers, and routed experts are released while the tower
+  runs
 
-Current scope is text-only inference from the pinned Gemma 4 26B-A4B
-instruction checkpoint on Apple Silicon Macs with at least 8 GB of RAM.
+Current scope is text input from the pinned Gemma 4 26B-A4B instruction
+checkpoint on Apple Silicon Macs with at least 8 GB of RAM, plus image input
+on M2 or newer Macs. Audio and video are out of scope.
 
 ### Future work
 
