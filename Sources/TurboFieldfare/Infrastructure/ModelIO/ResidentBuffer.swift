@@ -7,6 +7,8 @@ import Metal
 /// inside `buffer`.
 final class ResidentBuffer {
     let buffer: MTLBuffer
+    let residentSize: UInt64
+    let mappedLength: Int
 
     /// `mmap` the page-aligned window covering `[fileOffset, fileOffset + residentSize)`
     /// inside the file at `fileURL`. The wrapped `MTLBuffer` starts at the
@@ -15,17 +17,35 @@ final class ResidentBuffer {
     init(fileURL: URL,
                 fileOffset: UInt64,
                 residentSize: UInt64,
-                device: MTLDevice) throws {
+                device: MTLDevice,
+                fileDescriptor: Int32? = nil) throws {
         let pageSize = Int(getpagesize())
 
-        let fd = open(fileURL.path, O_RDONLY)
+        let fd = fileDescriptor.map { fcntl($0, F_DUPFD_CLOEXEC, 0) }
+            ?? open(fileURL.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else {
             throw ModelError.posixFailed(call: "open(\(fileURL.path))", errno: errno)
         }
         defer { close(fd) }
 
+        var info = stat()
+        guard fstat(fd, &info) == 0 else {
+            throw ModelError.posixFailed(call: "fstat(\(fileURL.path))", errno: errno)
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0 else {
+            throw ModelError.indexCorrupt(detail: "resident weights are not a regular file")
+        }
+        let (fileEnd, endOverflow) = fileOffset.addingReportingOverflow(residentSize)
+        guard residentSize > 0, !endOverflow, fileEnd <= UInt64(info.st_size),
+              fileOffset <= UInt64(Int64.max) else {
+            throw ModelError.indexCorrupt(detail: "resident mapping exceeds the weights file")
+        }
+
         let alignedOffset = (fileOffset / UInt64(pageSize)) * UInt64(pageSize)
         let sliceShift = Int(fileOffset - alignedOffset)
+        guard residentSize <= UInt64(Int.max - sliceShift) else {
+            throw ModelError.indexCorrupt(detail: "resident mapping exceeds addressable memory")
+        }
         let mappedLen = sliceShift + Int(residentSize)
         let mapped = mmap(nil, mappedLen, PROT_READ, MAP_PRIVATE,
                           fd, off_t(alignedOffset))
@@ -55,5 +75,7 @@ final class ResidentBuffer {
         }
 
         self.buffer = buf
+        self.residentSize = residentSize
+        self.mappedLength = mappedLen
     }
 }

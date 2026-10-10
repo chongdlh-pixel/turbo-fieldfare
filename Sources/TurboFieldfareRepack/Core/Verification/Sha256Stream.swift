@@ -23,7 +23,8 @@ struct Sha256Stream {
     static func hashFile(path: String,
                                 tileBytes: Int = 65_536,
                                 noCache: Bool = false,
-                                noFollow: Bool = false) throws -> String {
+                                noFollow: Bool = false,
+                                onProgress: ((UInt64) throws -> Void)? = nil) throws -> String {
         let flags = O_RDONLY | (noFollow ? O_NOFOLLOW : 0)
         let fd = open(path, flags)
         if fd < 0 { throw RepackError.fileOpenFailed(path: path, errno: errno) }
@@ -31,16 +32,34 @@ struct Sha256Stream {
         if noCache {
             _ = fcntl(fd, F_NOCACHE, 1)
         }
+        return try hashFileDescriptor(fd, displayPath: path, tileBytes: tileBytes,
+                                      onProgress: onProgress)
+    }
+
+    package static func hashFileDescriptor(_ fd: Int32,
+                                           displayPath: String,
+                                           tileBytes: Int = 65_536,
+                                           noCache: Bool = false,
+                                           onProgress: ((UInt64) throws -> Void)? = nil) throws -> String {
+        guard tileBytes > 0 else {
+            throw RepackError.configurationInvalid(detail: "SHA-256 tile size must be positive")
+        }
+        if noCache { _ = fcntl(fd, F_NOCACHE, 1) }
         var hasher = Sha256Stream()
         let buf = UnsafeMutableRawBufferPointer.allocate(byteCount: tileBytes, alignment: 16_384)
         defer { buf.deallocate() }
         var off: off_t = 0
         while true {
             let got = pread(fd, buf.baseAddress, tileBytes, off)
-            if got < 0 { throw RepackError.preadShort(path: path, expected: tileBytes, got: 0, errno: errno) }
+            if got < 0, errno == EINTR { continue }
+            if got < 0 {
+                throw RepackError.preadShort(path: displayPath,
+                                             expected: tileBytes, got: 0, errno: errno)
+            }
             if got == 0 { break }
             hasher.update(UnsafeRawBufferPointer(start: buf.baseAddress, count: got))
             off += off_t(got)
+            try onProgress?(UInt64(off))
         }
         return hasher.finalizeHexString()
     }

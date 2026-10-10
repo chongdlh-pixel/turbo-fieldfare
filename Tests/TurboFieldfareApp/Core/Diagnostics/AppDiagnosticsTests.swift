@@ -40,6 +40,46 @@ import Testing
         #expect(missingFirstToken.requestStartTimeToFirstTokenSeconds == nil)
     }
 
+    @Test func prefillRateUsesComputedTokensAndPrefillDuration() {
+        var diagnostics = AppDiagnostics(
+            generatedTokens: 1,
+            stopReason: .eos,
+            promptTokenCount: 20,
+            computedPrefillTokens: 5,
+            prefillSeconds: 6.17,
+            timeToFirstTokenSeconds: 0.5,
+            decodeSeconds: 0.75,
+            tokensPerSecond: 1.0,
+            peakMemoryBytes: nil,
+            runtimeOptions: AppRuntimeOptions())
+
+        #expect(abs((diagnostics.prefillTokensPerSecond ?? 0) - 0.810373) < 0.000001)
+
+        diagnostics.computedPrefillTokens = 0
+        #expect(diagnostics.prefillTokensPerSecond == nil)
+        diagnostics.computedPrefillTokens = 5
+        diagnostics.prefillSeconds = 0
+        #expect(diagnostics.prefillTokensPerSecond == nil)
+        diagnostics.prefillSeconds = .nan
+        #expect(diagnostics.prefillTokensPerSecond == nil)
+    }
+
+    @Test func prefillRateFallsBackToPromptTokensForOlderEvents() {
+        let diagnostics = AppDiagnostics(
+            generatedTokens: 1,
+            stopReason: .eos,
+            promptTokenCount: 20,
+            computedPrefillTokens: nil,
+            prefillSeconds: 5,
+            timeToFirstTokenSeconds: nil,
+            decodeSeconds: 0,
+            tokensPerSecond: 0,
+            peakMemoryBytes: nil,
+            runtimeOptions: AppRuntimeOptions())
+
+        #expect(diagnostics.prefillTokensPerSecond == 4)
+    }
+
     @Test func runnerDiagnosticsRetainPublicResultAndAdvancedMetrics() {
         let diagnostics = AppRunnerDiagnostics(
             cb1MillisecondsPerToken: 1,

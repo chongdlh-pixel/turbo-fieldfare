@@ -14,6 +14,7 @@ final class DecodeServiceOutbox: @unchecked Sendable {
         var latestPrefill: PrefillProgress?
         var latestToken: AppTokenEvent?
         var terminal: DecodeServiceEvent?
+        var terminalCommitted = false
         var finished = false
         var sequence: UInt64 = 0
     }
@@ -23,14 +24,30 @@ final class DecodeServiceOutbox: @unchecked Sendable {
     private let generationID: UUID
     private let memorySampler = AppMemorySampler()
 
-    init(generationID: UUID) {
+    /// Bytes of image tower currently held mapped, or nil when there is no
+    /// vision runtime. Sampled per event so Keep Ready is visible while a run
+    /// is happening, not only in its final diagnostics.
+    private let towerBytes: @Sendable () -> UInt64?
+    /// Nil outside conversation mode, so a one-shot turn reports no gauge
+    /// rather than a misleading zero.
+    private let conversationTokens: @Sendable () -> Int?
+
+    init(generationID: UUID,
+         towerBytes: @escaping @Sendable () -> UInt64? = { nil },
+         conversationTokens: @escaping @Sendable () -> Int? = { nil }) {
+        self.conversationTokens = conversationTokens
         self.generationID = generationID
+        self.towerBytes = towerBytes
         memorySampler.resetPeak()
     }
 
     func publish(_ event: AppInferenceEvent) {
         condition.lock()
         switch event {
+        case .memorySample:
+            // The writer samples on its own schedule; an inbound reading is the
+            // runtime's, and there is nothing to queue.
+            break
         case .prefillProgress(let done, let total):
             state.latestPrefill = PrefillProgress(done: done, total: total)
             condition.signal()
@@ -38,12 +55,28 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             state.pendingText += token.textDelta
             state.latestToken = token
         case .finished(let diagnostics):
-            state.terminal = terminal(.finished, diagnostics: diagnostics)
+            if !state.terminalCommitted {
+                state.terminal = terminal(.finished, diagnostics: diagnostics)
+                state.terminalCommitted = true
+            }
         case .cancelled(let diagnostics):
-            state.terminal = terminal(.cancelled, diagnostics: diagnostics)
+            if !state.terminalCommitted {
+                state.terminal = terminal(.cancelled, diagnostics: diagnostics)
+                state.terminalCommitted = true
+            }
         case .failed(let error, let diagnostics):
-            state.terminal = terminal(
-                .failed, diagnostics: diagnostics, error: error.userMessage)
+            if !state.terminalCommitted {
+                // A broken lineage is not the same terminal state as a failed
+                // turn. The turn can be retried; the conversation cannot, and
+                // the app has to clear it rather than offer a retry that would
+                // fail identically forever.
+                let kind: DecodeServiceEventKind
+                if case .conversationLineageLost = error { kind = .lineageLost }
+                else { kind = .failed }
+                state.terminal = terminal(
+                    kind, diagnostics: diagnostics, error: error.userMessage)
+                state.terminalCommitted = true
+            }
         }
         if state.terminal != nil { condition.signal() }
         condition.unlock()
@@ -51,9 +84,10 @@ final class DecodeServiceOutbox: @unchecked Sendable {
 
     func finish(error: Error? = nil) {
         condition.lock()
-        if state.terminal == nil, let error {
+        if !state.terminalCommitted, let error {
             state.terminal = DecodeServiceEvent(
                 kind: .failed, generationID: generationID, error: "\(error)")
+            state.terminalCommitted = true
         }
         state.finished = true
         condition.broadcast()
@@ -87,11 +121,25 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             }
             condition.unlock()
 
+            _ = memorySampler.sample()
+
+            if prefill == nil, text.isEmpty, token == nil, terminal == nil, !done {
+                let snapshot = DecodeServiceEvent(
+                    kind: .memory, generationID: generationID,
+                    currentMemoryBytes: memorySampler.sample(),
+                    peakMemoryBytes: memorySampler.peakBytes,
+                    visionTowerMappedBytes: towerBytes())
+                try handle.write(contentsOf: DecodeFrameCodec.encode(snapshot))
+                continue
+            }
             if let prefill, let prefillSequence {
                 let snapshot = DecodeServiceEvent(
                     kind: .prefill, generationID: generationID,
                     sequence: prefillSequence,
-                    prefillDone: prefill.done, prefillTotal: prefill.total)
+                    prefillDone: prefill.done, prefillTotal: prefill.total,
+                    currentMemoryBytes: memorySampler.sample(),
+                    peakMemoryBytes: memorySampler.peakBytes,
+                    visionTowerMappedBytes: towerBytes())
                 try handle.write(contentsOf: DecodeFrameCodec.encode(snapshot))
             }
             if !text.isEmpty || token != nil {
@@ -103,14 +151,15 @@ final class DecodeServiceOutbox: @unchecked Sendable {
                     decodeSeconds: elapsed,
                     tokensPerSecond: elapsed > 0 ? Double(count) / elapsed : 0,
                     currentMemoryBytes: memorySampler.sample(),
-                    peakMemoryBytes: memorySampler.peakBytes)
+                    peakMemoryBytes: memorySampler.peakBytes,
+                    visionTowerMappedBytes: towerBytes())
                 try handle.write(contentsOf: DecodeFrameCodec.encode(snapshot))
             }
             if let terminal {
                 try handle.write(contentsOf: DecodeFrameCodec.encode(terminal))
             }
-            if done, terminal == nil { return }
-            if terminal != nil && done { return }
+            if terminal != nil { return }
+            if done { return }
         }
     }
 
@@ -121,6 +170,7 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             kind: kind, generationID: generationID,
             tokenCount: diagnostics?.generatedTokens ?? 0,
             promptTokenCount: diagnostics?.promptTokenCount,
+            computedPrefillTokens: diagnostics?.computedPrefillTokens,
             prefillSeconds: diagnostics?.prefillSeconds,
             timeToFirstTokenSeconds: diagnostics?.timeToFirstTokenSeconds,
             decodeSeconds: diagnostics?.decodeSeconds ?? 0,
@@ -129,6 +179,17 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             error: error,
             currentMemoryBytes: memorySampler.sample(),
             peakMemoryBytes: memorySampler.peakBytes,
+            visionTowerMappedBytes: diagnostics?.visionTowerMappedBytes,
+            cachedPromptTokens: diagnostics?.cachedPromptTokens,
+            conversationTokenCount: conversationTokens(),
+            // The turn's own record, carried once on the event that ends it.
+            // The snapshots this outbox sends per 100 ms carry text, which is
+            // what the transcript shows; these are what the model saw, and the
+            // app cannot store the conversation without them.
+            promptTokenIDs: diagnostics?.promptTokenIDs,
+            generatedTokenIDs: diagnostics?.generatedTokenIDs,
+            boundaryTokenIDs: diagnostics?.boundaryTokenIDs,
+            boundaryNeedsReplay: diagnostics?.boundaryNeedsReplay,
             prefill: diagnostics?.prefill.map(Self.prefillDiagnostics),
             runner: diagnostics?.runner.map(Self.runnerDiagnostics))
     }

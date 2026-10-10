@@ -1,11 +1,13 @@
 import TurboFieldfareAppCore
+import TurboFieldfareMacPresentation
 import SwiftUI
 
 struct ErrorBanner: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        if let error = model.error, error != .cancelled {
+        if let error = model.error,
+           GenericErrorBannerPolicy.shouldShow(error: error, loadState: model.loadState) {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
@@ -23,6 +25,7 @@ struct ErrorBanner: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier(.bannerErrorDismiss)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
